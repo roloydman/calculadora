@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Launch the interactive Streamlit calculator.
+set -e
+
+# Resolve project directory even when invoked via symlink.
+SOURCE="$0"
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED="$(readlink -f "$SOURCE")"
+else
+  RESOLVED="$SOURCE"
+fi
+PROJECT_DIR="$(cd "$(dirname "$RESOLVED")" && pwd)"
+APP_FILE="$PROJECT_DIR/app.py"
+VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  echo "Usage: ai-calculadora [STREAMLIT_ARGS]"
+  echo ""
+  echo "Start the interactive calculator in the browser."
+  echo ""
+  echo "Examples:"
+  echo "  ai-calculadora"
+  echo "  ai-calculadora --server.port 8507"
+  echo "  ai-calculadora --server.headless true"
+  exit 0
+fi
+
+if [ ! -f "$APP_FILE" ]; then
+  echo "Error: app.py not found in $PROJECT_DIR" >&2
+  exit 1
+fi
+
+if [ -x "$VENV_PYTHON" ]; then
+  exec "$VENV_PYTHON" -m streamlit run "$APP_FILE" "$@"
+else
+  echo "Warning: project venv not found, falling back to system streamlit." >&2
+  exec python3 -m streamlit run "$APP_FILE" "$@"
+fi
