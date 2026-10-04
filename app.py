@@ -23,6 +23,19 @@ UNARY_OPS = {
 }
 
 
+def _strict_factorial(value):
+    """Integer-only factorial rejecting silent float truncation."""
+    if isinstance(value, bool):
+        raise ValueError(f"factorial requires an integer, got {value!r}")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"factorial requires an integer, got {value}")
+        value = int(value)
+    if not isinstance(value, int):
+        raise ValueError(f"factorial requires an integer, got {value!r}")
+    return math.factorial(value)
+
+
 def build_functions(use_degrees: bool):
     """Build whitelisted math functions honoring angle unit."""
 
@@ -52,7 +65,7 @@ def build_functions(use_degrees: bool):
         "log": lambda x, base=10: math.log(x, base),
         "ln": math.log,
         "exp": math.exp,
-        "factorial": lambda x: math.factorial(int(x)),
+        "factorial": _strict_factorial,
         "abs": abs,
         "round": round,
         "pow": pow,
