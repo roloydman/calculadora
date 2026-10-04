@@ -23,6 +23,17 @@ UNARY_OPS = {
 }
 
 
+# Evaluation resource limits (DoS prevention). Structural bounds make a
+# wall-clock timeout unnecessary: every accepted expression is small enough
+# to evaluate instantly in a single thread.
+MAX_EXPRESSION_LENGTH = 500
+MAX_AST_NODES = 200
+MAX_POWER_DIGITS = 1000
+MAX_EXPONENT_ABS = 10000
+MAX_FACTORIAL_ARG = 170
+MAX_RESULT_DIGITS = 1000
+
+
 def _strict_factorial(value):
     """Integer-only factorial rejecting silent float truncation."""
     if isinstance(value, bool):
@@ -33,6 +44,8 @@ def _strict_factorial(value):
         value = int(value)
     if not isinstance(value, int):
         raise ValueError(f"factorial requires an integer, got {value!r}")
+    if value > MAX_FACTORIAL_ARG:
+        raise ValueError(f"factorial argument too large (max {MAX_FACTORIAL_ARG})")
     return math.factorial(value)
 
 
@@ -80,9 +93,66 @@ def safe_evaluate(expression: str, use_degrees: bool = False):
     cleaned = expression.strip().replace("^", "**").replace("÷", "/").replace("×", "*")
     if not cleaned:
         raise ValueError("Empty expression")
-    tree = ast.parse(cleaned, mode="eval")
+    if len(cleaned) > MAX_EXPRESSION_LENGTH:
+        raise ValueError(f"Expression exceeds {MAX_EXPRESSION_LENGTH} characters")
+    try:
+        tree = ast.parse(cleaned, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Syntax error: {exc}") from exc
+    if _count_nodes(tree) > MAX_AST_NODES:
+        raise ValueError(f"Expression too complex (max {MAX_AST_NODES} nodes)")
     functions = build_functions(use_degrees)
-    return _eval_node(tree.body, functions)
+    result = _eval_node(tree.body, functions)
+    if isinstance(result, complex):
+        raise ValueError("Complex results are not supported")
+    return result
+
+
+def _count_nodes(node):
+    """Count AST nodes to bound evaluation work before running it."""
+    total = 1
+    for child in ast.iter_child_nodes(node):
+        total += _count_nodes(child)
+    return total
+
+
+def _check_result_size(result):
+    """Reject intermediate results that would exhaust memory or display."""
+    if isinstance(result, bool):
+        return
+    if isinstance(result, int):
+        if result.bit_length() > 3400:  # ~1023 decimal digits
+            raise ValueError(f"Result exceeds {MAX_RESULT_DIGITS} digits")
+    elif isinstance(result, float):
+        if math.isinf(result) or math.isnan(result):
+            raise OverflowError("Result out of range")
+
+
+def _guarded_pow(base, exponent):
+    """Power with magnitude estimation so giants are rejected pre-compute."""
+    for operand in (base, exponent):
+        if isinstance(operand, bool) or not isinstance(operand, (int, float)):
+            raise ValueError(f"Power operands must be numbers, got {operand!r}")
+    if isinstance(exponent, float):
+        if exponent.is_integer():
+            exponent = int(exponent)
+        else:
+            result = base**exponent
+            _check_result_size(result)
+            return result
+    if abs(exponent) > MAX_EXPONENT_ABS:
+        raise ValueError(f"Exponent too large (max {MAX_EXPONENT_ABS})")
+    grows = (exponent >= 0 and abs(base) > 1) or (exponent < 0 and 0 < abs(base) < 1)
+    if grows and base != 0:
+        digits = abs(exponent * math.log10(abs(base)))
+        if digits > MAX_POWER_DIGITS:
+            raise ValueError(f"Power result exceeds {MAX_POWER_DIGITS} digits")
+    try:
+        result = base**exponent
+    except OverflowError as exc:
+        raise OverflowError("Power result out of range") from exc
+    _check_result_size(result)
+    return result
 
 
 def _eval_node(node, functions):
@@ -96,7 +166,11 @@ def _eval_node(node, functions):
             raise ValueError(f"Operator not allowed: {op_type.__name__}")
         left = _eval_node(node.left, functions)
         right = _eval_node(node.right, functions)
-        return BIN_OPS[op_type](left, right)
+        if op_type is ast.Pow:
+            return _guarded_pow(left, right)
+        result = BIN_OPS[op_type](left, right)
+        _check_result_size(result)
+        return result
     if isinstance(node, ast.UnaryOp):
         op_type = type(node.op)
         if op_type not in UNARY_OPS:
@@ -339,5 +413,6 @@ with st.expander("Supported operations"):
         "- Constants: `pi`, `e`, `tau`\n"
         "- Functions: `sqrt`, `cbrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, "
         "`log(x[, base])`, `ln`, `exp`, `factorial`, `abs`, `round`, `pow`\n"
-        "- Shortcut: `^` works as power, `Ans` recalls the last answer."
+        "- Shortcut: `^` works as power, `Ans` recalls the last answer.\n"
+        "- Limits: 500 chars, results capped at ~1000 digits, factorial up to 170."
     )
